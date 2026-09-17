@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Journal</title>
+<style>
+  html, body {
+    margin:0;padding:0;height:100%;width:100%;
+    background:#fdfdfb;overflow:hidden;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+  }
+  #page {
+    width:100%;height:100%;box-sizing:border-box;
+    padding:36px 24px;border:none;outline:none;resize:none;
+    background:transparent;font-size:19px;line-height:1.6;color:#222;
+  }
+  #gbtn {
+    position:fixed;top:14px;right:14px;width:34px;height:34px;border-radius:50%;
+    background:#fff;box-shadow:0 1px 4px rgba(0,0,0,0.15);
+    display:flex;align-items:center;justify-content:center;cursor:pointer;
+    z-index:10;opacity:0.5;transition:opacity .2s;
+  }
+  #gbtn img{width:18px;height:18px;}
+  #gbtn.connected{opacity:0.3;}
+  #overlay {
+    position:fixed;inset:0;background:#fdfdfb;display:flex;
+    flex-direction:column;align-items:center;justify-content:center;z-index:20;
+  }
+  #signinbtn {
+    display:flex;align-items:center;gap:10px;padding:10px 20px;border-radius:24px;
+    border:1px solid #dadce0;background:#fff;font-size:15px;color:#3c4043;
+    cursor:pointer;box-shadow:0 1px 2px rgba(0,0,0,.08);
+  }
+  #signinbtn img{width:18px;height:18px;}
+  #status {
+    position:fixed;bottom:10px;left:0;right:0;text-align:center;
+    font-size:11px;color:#ccc;z-index:10;pointer-events:none;
+  }
+</style>
+</head>
+<body>
+
+<textarea id="page" spellcheck="false"></textarea>
+<div id="gbtn"><img src="https://developers.google.com/identity/images/g-logo.png" alt="G"></div>
+<div id="status"></div>
+
+<div id="overlay">
+  <button id="signinbtn"><img src="https://developers.google.com/identity/images/g-logo.png" alt="G">Se connecter avec Google</button>
+</div>
+
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script>
+const CLIENT_ID = "974609509965-uaud3tps9bhk6vrfnfc11dk6dbkbb1u4.apps.googleusercontent.com";
+const SCOPE = "https://www.googleapis.com/auth/drive.file";
+const FILE_NAME = "mon-journal-donnees.json";
+
+let tokenClient, accessToken = null, fileId = null;
+let pages = [""], currentIndex = 0, saveTimer = null;
+
+const pageEl = document.getElementById('page');
+const overlay = document.getElementById('overlay');
+const gbtn = document.getElementById('gbtn');
+const statusEl = document.getElementById('status');
+const signinbtn = document.getElementById('signinbtn');
+
+function setStatus(t){
+  statusEl.textContent = t;
+  setTimeout(()=>{ if(statusEl.textContent===t) statusEl.textContent=''; }, 1200);
+}
+
+function initGoogle(){
+  tokenClient = google.accounts.oauth2.initTokenClient({
+    client_id: CLIENT_ID,
+    scope: SCOPE,
+    callback: (resp) => {
+      if(resp.access_token){
+        accessToken = resp.access_token;
+        localStorage.setItem('signed_in_before','1');
+        onSignedIn();
+      }
+    }
+  });
+  if(localStorage.getItem('signed_in_before')){
+    tokenClient.requestAccessToken({prompt:''});
+  }
+}
+
+signinbtn.addEventListener('click', ()=> tokenClient.requestAccessToken({prompt:'consent'}));
+gbtn.addEventListener('click', ()=>{ if(!accessToken) tokenClient.requestAccessToken({prompt:'consent'}); });
+
+async function onSignedIn(){
+  overlay.style.display = 'none';
+  gbtn.classList.add('connected');
+  await loadFromDrive();
+  showPage(currentIndex);
+}
+
+async function findFileId(){
+  const res = await fetch(`https://www.googleapis.com/drive/v3/files?q=name='${FILE_NAME}' and trashed=false&spaces=drive&fields=files(id,name)`,
+    { headers: { Authorization: `Bearer ${accessToken}` } });
+  const data = await res.json();
+  return (data.files && data.files.length>0) ? data.files[0].id : null;
+}
+
+async function loadFromDrive(){
+  try{
+    fileId = await findFileId();
+    if(fileId){
+      const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
+        { headers: { Authorization: `Bearer ${accessToken}` } });
+      const data = await res.json();
+      if(data.pages && data.pages.length>0){
+        pages = data.pages;
+        currentIndex = Math.min(data.currentIndex||0, pages.length-1);
+      }
+    } else {
+      await createFile();
+    }
+  } catch(e){ console.error(e); }
+}
+
+async function createFile(){
+  const metadata = { name: FILE_NAME, mimeType: 'application/json' };
+  const boundary = '-------314159265358979323846';
+  const delimiter = "\r\n--" + boundary + "\r\n";
+  const closeDelim = "\r\n--" + boundary + "--";
+  const content = JSON.stringify({pages, currentIndex});
+  const body = delimiter + 'Content-Type: application/json\r\n\r\n' + JSON.stringify(metadata)
+    + delimiter + 'Content-Type: application/json\r\n\r\n' + content + closeDelim;
+  const res = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+    method:'POST',
+    headers:{ Authorization:`Bearer ${accessToken}`, 'Content-Type':`multipart/related; boundary=${boundary}` },
+    body
+  });
+  const data = await res.json();
+  fileId = data.id;
+}
+
+async function saveToDrive(){
+  if(!accessToken) return;
+  try{
+    if(!fileId){ await createFile(); return; }
+    const content = JSON.stringify({pages, currentIndex});
+    await fetch(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`, {
+      method:'PATCH',
+      headers:{ Authorization:`Bearer ${accessToken}`, 'Content-Type':'application/json' },
+      body: content
+    });
+    setStatus('•');
+  } catch(e){ console.error(e); }
+}
+
+function queueSave(){ clearTimeout(saveTimer); saveTimer = setTimeout(saveToDrive, 1200); }
+
+function showPage(i){ currentIndex = i; pageEl.value = pages[i] || ""; pageEl.focus(); }
+
+pageEl.addEventListener('input', ()=>{ pages[currentIndex] = pageEl.value; queueSave(); });
+
+let touchStartX = null;
+document.addEventListener('touchstart', e=>{ touchStartX = e.touches[0].clientX; });
+document.addEventListener('touchend', e=>{
+  if(touchStartX===null) return;
+  const dx = e.changedTouches[0].clientX - touchStartX;
+  touchStartX = null;
+  if(Math.abs(dx) < 60) return;
+  if(dx < 0){
+    if(currentIndex < pages.length - 1) showPage(currentIndex+1);
+    else { pages.push(""); showPage(pages.length-1); queueSave(); }
+  } else {
+    if(currentIndex > 0) showPage(currentIndex-1);
+  }
+});
+
+document.addEventListener('keydown', e=>{
+  if(e.ctrlKey && e.key === 'ArrowRight'){
+    e.preventDefault();
+    if(currentIndex < pages.length - 1) showPage(currentIndex+1);
+    else { pages.push(""); showPage(pages.length-1); queueSave(); }
+  }
+  if(e.ctrlKey && e.key === 'ArrowLeft'){
+    e.preventDefault();
+    if(currentIndex > 0) showPage(currentIndex-1);
+  }
+});
+
+window.addEventListener('load', ()=>{
+  const check = setInterval(()=>{
+    if(window.google && google.accounts){ clearInterval(check); initGoogle(); }
+  }, 100);
+});
+</script>
+</body>
+</html>
