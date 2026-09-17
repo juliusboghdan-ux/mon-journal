@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Journal</title>
+<style>
+  html, body {
+    margin:0;padding:0;height:100%;width:100%;
+    background:#fdfdfb;overflow:hidden;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+  }
+  #page {
+    width:100%;height:100%;box-sizing:border-box;
+    padding:36px 24px;border:none;outline:none;resize:none;
+    background:transparent;font-size:19px;line-height:1.6;color:#222;
+  }
+  #gbtn {
+    position:fixed;top:14px;right:14px;width:30px;height:30px;border-radius:50%;
+    background:#fff;box-shadow:0 1px 4px rgba(0,0,0,0.15);
+    display:flex;align-items:center;justify-content:center;
+    z-index:10;opacity:0.4;
+  }
+  #gbtn img{width:16px;height:16px;}
+  #status {
+    position:fixed;bottom:10px;left:0;right:0;text-align:center;
+    font-size:11px;color:#ccc;z-index:10;pointer-events:none;
+  }
+  #exportPanel {
+    position:fixed;inset:0;background:rgba(0,0,0,0.4);
+    display:none;align-items:center;justify-content:center;z-index:30;
+  }
+  #exportPanel.show{display:flex;}
+  #exportBox {
+    background:#fff;border-radius:12px;padding:24px;width:80%;max-width:340px;
+    text-align:center;
+  }
+  #exportBox p{font-size:14px;color:#444;margin:0 0 16px 0;}
+  #exportBox button {
+    display:block;width:100%;padding:12px;margin-bottom:10px;border:none;
+    border-radius:8px;background:#f1f1f1;font-size:15px;color:#222;
+  }
+  #exportBox button.primary{background:#222;color:#fff;}
+</style>
+</head>
+<body>
+
+<textarea id="page" spellcheck="false"></textarea>
+<div id="gbtn"><img src="https://developers.google.com/identity/images/g-logo.png" alt="G"></div>
+<div id="status"></div>
+
+<div id="exportPanel">
+  <div id="exportBox">
+    <p>Exporter tout ton journal dans un fichier texte, pour le garder en sécurité (envoi par email, dépôt dans le Drive, etc.)</p>
+    <button class="primary" id="doExport">Exporter mon journal</button>
+    <button id="closeExport">Annuler</button>
+  </div>
+</div>
+
+<script>
+const STORAGE_KEY = 'mon-journal-pages';
+let pages = [""];
+let currentIndex = 0;
+let saveTimer = null;
+
+const pageEl = document.getElementById('page');
+const statusEl = document.getElementById('status');
+const gbtn = document.getElementById('gbtn');
+const exportPanel = document.getElementById('exportPanel');
+const doExportBtn = document.getElementById('doExport');
+const closeExportBtn = document.getElementById('closeExport');
+
+function setStatus(t){
+  statusEl.textContent = t;
+  setTimeout(()=>{ if(statusEl.textContent===t) statusEl.textContent=''; }, 1200);
+}
+
+function load(){
+  try{
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if(raw){
+      const data = JSON.parse(raw);
+      if(data.pages && data.pages.length>0){
+        pages = data.pages;
+        currentIndex = Math.min(data.currentIndex||0, pages.length-1);
+      }
+    }
+  } catch(e){ console.error(e); }
+}
+
+function save(){
+  try{
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({pages, currentIndex}));
+    setStatus('•');
+  } catch(e){ console.error(e); }
+}
+
+function queueSave(){
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(save, 800);
+}
+
+function showPage(i){
+  currentIndex = i;
+  pageEl.value = pages[i] || "";
+  pageEl.focus();
+}
+
+pageEl.addEventListener('input', ()=>{
+  pages[currentIndex] = pageEl.value;
+  queueSave();
+});
+
+let touchStartX = null;
+document.addEventListener('touchstart', e=>{ touchStartX = e.touches[0].clientX; });
+document.addEventListener('touchend', e=>{
+  if(touchStartX===null) return;
+  const dx = e.changedTouches[0].clientX - touchStartX;
+  touchStartX = null;
+  if(Math.abs(dx) < 60) return;
+  if(dx < 0){
+    if(currentIndex < pages.length - 1) showPage(currentIndex+1);
+    else { pages.push(""); showPage(pages.length-1); queueSave(); }
+  } else {
+    if(currentIndex > 0) showPage(currentIndex-1);
+  }
+});
+
+document.addEventListener('keydown', e=>{
+  if(e.ctrlKey && e.key === 'ArrowRight'){
+    e.preventDefault();
+    if(currentIndex < pages.length - 1) showPage(currentIndex+1);
+    else { pages.push(""); showPage(pages.length-1); queueSave(); }
+  }
+  if(e.ctrlKey && e.key === 'ArrowLeft'){
+    e.preventDefault();
+    if(currentIndex > 0) showPage(currentIndex-1);
+  }
+});
+
+let pressTimer = null;
+document.addEventListener('touchstart', ()=>{
+  pressTimer = setTimeout(()=>{ exportPanel.classList.add('show'); }, 900);
+});
+document.addEventListener('touchend', ()=>{ clearTimeout(pressTimer); });
+document.addEventListener('touchmove', ()=>{ clearTimeout(pressTimer); });
+
+gbtn.addEventListener('click', ()=>{ exportPanel.classList.add('show'); });
+closeExportBtn.addEventListener('click', ()=>{ exportPanel.classList.remove('show'); });
+
+doExportBtn.addEventListener('click', ()=>{
+  const content = pages.map((p,i)=> `--- page ${i+1} ---\n${p}`).join('\n\n');
+  const blob = new Blob([content], {type:'text/plain'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'mon-journal.txt';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  exportPanel.classList.remove('show');
+});
+
+load();
+showPage(currentIndex);
+</script>
+</body>
+</html>
